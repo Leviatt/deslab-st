@@ -62,16 +62,19 @@ class Automata:  # Automaton structure
     def add_transition(self, transitions: list, event: list, uncontrollable: list = [], uc_events: list = [],
                        c_events: list = [], dict_events: dict = [], dict_events_name: dict = []):
         # Add a transition in the automaton
+        uncontrolled = set(uncontrollable)
+        local_uncontrolled = set(self.uc_events)
+        local_controlled = set(self.c_events)
         for i in range(0, len(event)):
-            aux_event = event[i]
-            aux_list = dict_events.keys()
-            if event[i] not in self.uc_events and event[i] in uncontrollable:
+            if event[i] not in local_uncontrolled and event[i] in uncontrolled:
                 self.uc_events.append(event[i])
-            if event[i] not in self.c_events and event[i] not in uncontrollable:
+                local_uncontrolled.add(event[i])
+            if event[i] not in local_controlled and event[i] not in uncontrolled:
                 self.c_events.append(event[i])
+                local_controlled.add(event[i])
 
             if event[i] not in dict_events.keys():
-                if event[i] in uncontrollable:
+                if event[i] in uncontrolled:
                     if event[i] not in uc_events:
                         uc_events.append(event[i])
                         id = 2 * (len(uc_events) - 1)
@@ -85,8 +88,6 @@ class Automata:  # Automaton structure
                         dict_events_name[str(id)] = event[i]
 
         for i in range(0, len(transitions)):
-            aux = self.states[transitions[i][0]]
-            eve = event[i]
             self.states[transitions[i][0]].add_active_event(event[i])
             self.transitions.append((transitions[i][0], int(dict_events.get(event[i])), transitions[i][1]))
 
@@ -191,6 +192,40 @@ class process(DeslabBackend):
     def generate_ST_OPENPLC(self, supervisors: list, plants: list = [], actuators: dict = dict([]), namest='code_st',
                             Mask: dict = dict([]), Isolated: list = [], initial: str = "null"):
         # Generate the full ST code
+        if not supervisors:
+            raise ValueError("At least one supervisor is required")
+        if len(supervisors) > 1 and len(plants) != len(supervisors):
+            raise ValueError("Supply one plant per supervisor, in the same order")
+        if Isolated and len(Isolated) != 2:
+            raise ValueError("Isolated must contain [automaton_names, event_pairs]")
+        names = [*supervisors, *(Isolated[0] if Isolated else [])]
+        required = set()
+        for name in names:
+            if name not in self.automatas:
+                raise ValueError(f"Automaton {name!r} is not loaded")
+            required.update(self.automatas[name].c_events)
+            required.update(self.automatas[name].uc_events)
+        for first, second in Isolated[1] if Isolated else ():
+            required.update((first, second))
+        if initial != "null":
+            required.add(initial)
+        missing = required.difference(actuators)
+        if missing:
+            raise ValueError("Missing PLC signal mappings for: " + ", ".join(sorted(map(str, missing))))
+        signals = set()
+        for event, mapping in actuators.items():
+            fields = mapping.split(":") if isinstance(mapping, str) else []
+            if (len(fields) == 2 and all(fields) and fields[1] in ("ON", "OFF")
+                    and ("INTERN" in fields[0] or fields[0] in signals)):
+                continue
+            if len(fields) == 3 and all(fields):
+                if fields[1] in ("ON", "OFF"):
+                    signals.add(fields[0])
+                    continue
+                if fields[0].startswith(("RE", "FE")):
+                    signals.add(fields[1])
+                    continue
+            raise ValueError(f"Invalid PLC mapping for {event!r}: {mapping!r}")
 
         RANDOM = "FUNCTION_BLOCK random_number\n\tVAR_INPUT\n\t\tIN : BOOL;\n\tEND_VAR\n\tVAR\n\t\tM : BOOL;"
         RANDOM += "\n\t\tINIT : BOOL;\n\tEND_VAR\n\tVAR_OUTPUT\n\t\tOUT : DINT;\n\tEND_VAR\n"
@@ -272,15 +307,19 @@ class process(DeslabBackend):
                         st.append(n_r)
                 if len(Isolated[1]) != 0:
                     aislated = self.aislated(Isolated[1], actuators, Intersections)
-                for c in Coordinators:
-                    COsw += self.coordinator_sc(c, actuators=actuators, state_it=j)
-                    a, b = self.ifs(c, actuators, j)
-                    st.append(0)
-                    j += 1
-                    COc += a
-                    COu += b
+            for c in Coordinators:
+                COsw += self.coordinator_sc(c, actuators=actuators, state_it=j)
+                a, b = self.ifs(c, actuators, j)
+                st.append(0)
+                j += 1
+                COc += a
+                COu += b
 
-            intersection = self.intersection(Intersections, len(Coordinators) != 0)
+            coordinated_signals = {
+                actuators[event].split(':')[0]
+                for name in Coordinators for event in self.automatas[name].c_events
+            }
+            intersection = self.intersection(Intersections, coordinated_signals)
             declaration = self.declaration_OPENPLC(actuators, st, j, Intersections, Coordinators, Mask,
                                                    initial=initial)
             for msk in Mask.keys():
@@ -355,13 +394,14 @@ class process(DeslabBackend):
         return out
 
 
-    def intersection(self, intersection: dict, CO=False, addG="_G[", addC="_C[", name_intersection="aux"):
+    def intersection(self, intersection: dict, coordinated_signals=(), addG="_G[", addC="_C[", name_intersection="aux"):
         # Generate the code for the intersection between supervisors and coordinators
         out = ""
         for inter in intersection.keys():
+            coordinated = inter in coordinated_signals
             aux = ""
             coor = ""
-            bandera = inter if not CO else name_intersection
+            bandera = name_intersection if coordinated else inter
             guesses = []
             for act in range(len(intersection[inter])):
                 guesses.append(inter + addG + str(act) + "]")
@@ -386,7 +426,7 @@ class process(DeslabBackend):
                         else:
                             out += " THEN\n"
                     aux += "\t\t" + guesses[j - 1] + " := " + inter + ";\t\t\t"
-            if CO:
+            if coordinated:
                 coor += "\tIF " + bandera + " XOR " + inter + " THEN\n\t\t"
                 coor += "IF NOT " + bandera + " & " + inter + addC + "0] THEN\n\t\t\t"
                 coor += inter + " := 0;\n\t\t"
@@ -454,29 +494,21 @@ class process(DeslabBackend):
             if aux[1] == 'ON' or aux[1] == 'OFF':
                 if aux[0] in declared:
                     continue
-                declaration += "\t\t" + aux[0] + " AT "
+                declaration += "\t\t" + aux[0] + " AT " + aux[2] + " : BOOL;\n"
                 declared.append(aux[0])
-                if "IN" in aux[0]:
-                    declaration += aux[2] + " : BOOL;\n"
-                elif "OUT" in aux[0]:
-                    declaration += aux[2] + " : BOOL;\n"
             else:
                 if aux[1] not in declared:
                     declared.append(aux[1])
-                    declaration += "\t\t" + aux[1] + " AT "
-                    if "IN" in aux[1]:
-                        declaration += aux[2] + " : BOOL;\n"
-                    elif "OUT" in aux[1]:
-                        declaration += aux[2] + " : BOOL;\n"
+                    declaration += "\t\t" + aux[1] + " AT " + aux[2] + " : BOOL;\n"
                 start += "\t\t" + aux[0] + " : "
 
-                if "FE" in aux[0]:
+                if aux[0].startswith("FE"):
                     start += "F_TRIG;\n"
-                if "RE" in aux[0]:
+                if aux[0].startswith("RE"):
                     start += "R_TRIG;\n"
 
                 clocks += "\t" + aux[0] + '(CLK:= ' + aux[1] + ');\n'
-            ran = "\trandom(\n\t\tIN := True,\n\t\tOUT => random_num);\n"
+        ran = "\trandom(\n\t\tIN := True,\n\t\tOUT => random_num);\n"
         start += "\tEND_VAR\n"
         declaration += "\tEND_VAR\n"
         return start + declaration + clocks + ran
@@ -487,31 +519,29 @@ class process(DeslabBackend):
         if_controllable = "\t"
         if name not in self.automatas.keys():
             return "ERROR"
-        transit = self.automatas[name].transitions
-        for i in range(0, len(transit)):
-            origin = self.automatas[name].transitions[i][0]
-            destination = self.automatas[name].transitions[i][2]
-            event = str(self.automatas[name].transitions[i][1])
+        for origin, event_code, destination in self.automatas[name].transitions:
+            if origin == destination:
+                continue
+            event = str(event_code)
             if len(actuators) == 0:
                 name_event = self.dict_events_name[event]
             else:
                 name_event = actuators[self.dict_events_name[event]]
             name_event = name_event.split(':')
+            edge_trigger = name_event[1] not in ("ON", "OFF")
 
             if name_event[1] == 'OFF':
                 name_event = 'NOT ' + name_event[0]
             else:
                 name_event = name_event[0]
-            if origin == destination:
-                continue
-            if self.dict_events_name[event] in self.c_events:
+            if event_code % 2:
                 if_controllable += "IF state[" + str(n_state) + "] = " + str(origin) \
                                    + " & " + name_event \
                                    + " THEN\n  " + "\t\t" + "state[" + str(n_state) + "] := " \
                                    + str(destination) + ";\n  " + "\tELS"
-            elif self.dict_events_name[event] in self.uc_events:
+            else:
                 if_uncontrollable += "IF state[" + str(n_state) + "] = " + str(origin) + " & "
-                if_uncontrollable += name_event + ('.Q' if 'FE' in name_event or 'RE' in name_event else '')
+                if_uncontrollable += name_event + ('.Q' if edge_trigger else '')
                 if_uncontrollable += " THEN\n  " + "\t\t" + "state[" + str(n_state) + "] := "
                 if_uncontrollable += str(destination) + ";\n  " + "\tELS"
         if if_controllable == "\t": if_controllable = ""
@@ -534,10 +564,11 @@ class process(DeslabBackend):
                     else:
                         act_guess[i] = [inter]
         n_r = 0
+        uncontrolled = set(self.uc_events)
         state_list = self.automatas[name].states
         case = "\tCASE state[" + str(n_aut) + "] OF\n  "
         for state in state_list:
-            events = [event for event in state.get_active_events() if event not in self.uc_events]
+            events = [event for event in state.get_active_events() if event not in uncontrolled]
             num_event = len(events)
             if len(events) != 0:
                 case += "\t\t" + str(state.get_id()) + ":\n  "
@@ -589,11 +620,11 @@ class process(DeslabBackend):
         # Generate the ST code for the Coordinator case statements
         state_list = self.automatas[name].states
         case = "\tCASE state[" + str(state_it) + "] OF\n  "
+        all_events = self.automatas[name].c_events
         for state in state_list:
-            all_events = self.automatas[name].c_events
-            events = [event for event in state.get_active_events() if event not in self.uc_events]
+            events = set(state.get_active_events())
             num_event = len(all_events)
-            if len(events) != 0:
+            if num_event:
                 case += "\t\t" + str(state.get_id()) + ":\n  "
                 for i in range(0, num_event):
                     name_event = all_events[i] if len(actuators) == 0 else actuators[all_events[i]]

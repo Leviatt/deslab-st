@@ -3,7 +3,8 @@
 from collections import deque
 from functools import reduce
 
-from deslab import allevents, fsa, parallel, product, supcontrollable, trim
+from deslab import allevents, fsa, parallel, product, supcontrollable
+from deslab.src.algorithms import dfs
 
 
 class DeslabBackend:
@@ -61,13 +62,23 @@ class DeslabBackend:
 
     def nonconflict(self, first, second):
         combined = parallel(self.models[first], self.models[second])
-        return combined.X == trim(combined).X
+        return self._all_states_can_reach_marker(combined)
 
     def coordinator(self, supervisors, plants):
+        """Check a supervisor pair and prepare its synthesis inputs on conflict."""
         combined = self.automata_syncronize(supervisors, "SUPt")
+        # The alphabet automaton has one marked state and a self-loop for
+        # every event in its alphabet. It cannot change blocking behavior.
+        if self._all_states_can_reach_marker(self.models[combined]):
+            return True, combined, None
         plant = self.automata_syncronize(plants, "plantaTotal")
         alphabet = self.all_events(plant, "AEcoor")
-        return self.nonconflict(combined, alphabet), combined, alphabet
+        return False, combined, alphabet
+
+    @staticmethod
+    def _all_states_can_reach_marker(model):
+        # Parallel composition constructs only reachable states.
+        return dfs(model.Graph.reverse(copy=False), model.Xm) == model.X
 
     def reduce_supervisor(self, plant_name, supervisor_name, name):
         """Build a deterministic control congruence relative to the given plant."""
