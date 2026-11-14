@@ -117,9 +117,9 @@ def build(output_dir=DEFAULT_OUTPUT_DIR):
                                ['M2_END', 'M2_BROKEN'])
 
     REQ_Buffer = new_process.new_automaton('REQ_Buffer')
-    new_process.add_state(REQ_Buffer, 4, [], [True, True, True])
-    new_process.add_transition(REQ_Buffer, [(0, 1), (1, 2), (2, 1), (2, 3), (3, 2)],
-                               ['Piece_located', 'Piece_located', '21', 'Piece_located', '21'],
+    new_process.add_state(REQ_Buffer, 3, [], [True, True, True])
+    new_process.add_transition(REQ_Buffer, [(0, 1), (1, 0), (1, 2), (2, 1)],
+                               ['Piece_located', '21', 'Piece_located', '21'],
                                ['Piece_located'])
 
     REQ_repair = new_process.new_automaton('REQ_repair')
