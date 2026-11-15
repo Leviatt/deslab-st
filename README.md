@@ -30,7 +30,17 @@ The examples carry over the original plant, specifications, and PLC signal maps.
 
 ## Model, synthesize, and generate ST
 
-This two-state supervisor starts a motor from idle and returns to idle when a sensor reports completion.
+If you already have a DESlab supervisor `S` and its event-to-signal mapping, pass them directly to the generator.
+
+```python
+from generator import generate_ST_OPENPLC
+
+st = generate_ST_OPENPLC([S], actuators=actuators, namest="controller")
+```
+
+This writes `ST_Generated/controller.st` and returns the same source as a string. Pass `plants=[G]` to use the original plant's controllable-event classification. For multiple supervisors, pass one plant per supervisor in the same order.
+
+The complete example below builds a two-state supervisor that starts a motor from idle and returns to idle when a sensor reports completion.
 
 ```python
 from deslab import fsa, parallel, supcontrollable
@@ -68,7 +78,7 @@ An `fsa` defines states, events, transitions as `(source, event, destination)` t
 
 Pass DESlab automata directly to `generate_ST_OPENPLC`. The function reads the enabled events and transitions from the models already in memory. Each model must be deterministic and reachable with one initial state and no epsilon transitions. Its initial state becomes ST state 0.
 
-When a plant is provided, it determines controllability for events in its alphabet. For a single supervisor with correct controllability already set, the call can be as short as `generate_ST_OPENPLC([S], actuators=actuators, namest="controller")`.
+When a plant is provided, it determines controllability for events in its alphabet. A single supervisor can omit the plant when its own controllability classification is correct.
 
 For a model with no controllable events, set `model = model.setpar(Sigcon=[])`. The pinned DESlab version can interpret `Sigcon=[]` in the `fsa` constructor as all events controllable.
 
