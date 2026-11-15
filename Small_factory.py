@@ -5,8 +5,7 @@ from pathlib import Path
 
 from deslab import allevents
 
-from example_models import ExampleComponents, synthesize
-from generator import generate_ST_OPENPLC
+from example_models import ExampleComponents
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "ST_Generated"
@@ -58,7 +57,6 @@ def build(output_dir=DEFAULT_OUTPUT_DIR):
     Mask['NOT GD_IN_10'] = [('GD_OUT_8', '%QX101.0')]  # M1_BROKEN -> M1_BROKEN
     Mask['NOT GD_IN_11'] = [('GD_OUT_9', '%QX101.1')]  # M2_BROKEN -> M2_BROKEN
     components = ExampleComponents()
-    state_order_sources = {}
 
     M1 = components.component(
         'M1', 4, [0, 1, 2, 3],
@@ -164,22 +162,20 @@ def build(output_dir=DEFAULT_OUTPUT_DIR):
 
     plant_BA = B_A
     spec_BA = start // allevents(plant_BA)
-    sup_BA = synthesize(plant_BA, spec_BA, 'sup_BA', state_order_sources)
+    sup_BA = components.synthesize(plant_BA, spec_BA, 'sup_BA')
 
     plant = model_M1 // model_M2
     spec = REQ_Buffer // REQ_start // REQ_repair // allevents(plant)
-    sup = synthesize(plant, spec, 'SUP', state_order_sources)
+    sup = components.synthesize(plant, spec, 'SUP')
 
     isolated = [
         [M1, M2, sup_BA, generate, Buffer_fill, Blade, repair],
         [('21', 'M2_ON'), ('11', 'M1_ON')],
     ]
-    return generate_ST_OPENPLC(
+    return components.emit_st(
         [sup], [plant], actuators, 'Small_factory',
         Mask=Mask, Isolated=isolated, initial='start',
-        output_dir=output_dir, event_order=components.event_order,
-        state_order_sources=state_order_sources,
-        transition_order=components.transition_order(isolated[0]),
+        output_dir=output_dir,
     )
 
 

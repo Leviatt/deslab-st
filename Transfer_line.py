@@ -5,8 +5,7 @@ from pathlib import Path
 
 from deslab import allevents
 
-from example_models import ExampleComponents, synthesize
-from generator import generate_ST_OPENPLC
+from example_models import ExampleComponents
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "ST_Generated"
@@ -71,7 +70,6 @@ def build(output_dir=DEFAULT_OUTPUT_DIR):
                           ('GD_OUT_14', '%QX101.6')]  # ARM_TU -> ARMSPEED_TU, Conveyor_1REP, EMITREP,Conveyor2_REP
 
     components = ExampleComponents()
-    state_order_sources = {}
 
     # sup_M1
 
@@ -230,22 +228,22 @@ def build(output_dir=DEFAULT_OUTPUT_DIR):
     Plant_M1 = Conveyor_M1
     allm1 = allevents(Plant_M1)
     specm1 = M1_piece // allm1
-    sup_M1 = synthesize(Plant_M1, specm1, 'sup_M1', state_order_sources)
+    sup_M1 = components.synthesize(Plant_M1, specm1, 'sup_M1')
 
     Plant_Buffer_1 = Conveyor_buffer // Clamp // Blade
     allb1 = allevents(Plant_Buffer_1)
     specb1 = event_2 // Buffer_join // Clamp_REQ // allb1
-    sup_B1 = synthesize(Plant_Buffer_1, specb1, 'sup_B1', state_order_sources)
+    sup_B1 = components.synthesize(Plant_Buffer_1, specb1, 'sup_B1')
 
     Plant_Buffer_2 = Conveyor_buffer2
     allb2 = allevents(Plant_Buffer_2)
     specb2 = Buffer2_join // allb2
-    sup_B2 = synthesize(Plant_Buffer_2, specb2, 'sup_B2', state_order_sources)
+    sup_B2 = components.synthesize(Plant_Buffer_2, specb2, 'sup_B2')
 
     Plant_TU = Conveyor_TU // ARM_TU
     alltu = allevents(Plant_TU)
     spectu = TU_Function // alltu
-    sup_TU = synthesize(Plant_TU, spectu, 'sup_TU', state_order_sources)
+    sup_TU = components.synthesize(Plant_TU, spectu, 'sup_TU')
 
     start = components.component(
         'start', 2, [1],
@@ -259,23 +257,21 @@ def build(output_dir=DEFAULT_OUTPUT_DIR):
     plant_2 = M1_REQ // M2_REQ // TU_REQ
     all_2 = allevents(plant_2)
     spec_2 = start // B1SP // all_2
-    sup_2 = synthesize(plant_2, spec_2, 'sup_2', state_order_sources)
+    sup_2 = components.synthesize(plant_2, spec_2, 'sup_2')
 
     plant2_2 = M2_REQ // TU_REQ
     all2_2 = allevents(plant2_2)
     spec2_2 = B2SP // all2_2
-    sup2_2 = synthesize(plant2_2, spec2_2, 'sup2_2', state_order_sources)
+    sup2_2 = components.synthesize(plant2_2, spec2_2, 'sup2_2')
 
     isolated = [
         [sup_M1, sup_B1, M2, sup_B2, sup_TU, Pyp],
         [('1', 'M1_Conveyor_ON'), ('3', 'M2_ON'), ('5', 'TU_Conveyor_ON')],
     ]
-    return generate_ST_OPENPLC(
+    return components.emit_st(
         [sup_2, sup2_2], [plant_2, plant2_2], actuators, 'transfer_line',
         Mask=Masks, Isolated=isolated, initial='start',
-        output_dir=output_dir, event_order=components.event_order,
-        state_order_sources=state_order_sources,
-        transition_order=components.transition_order(isolated[0]),
+        output_dir=output_dir,
     )
 
 

@@ -2,15 +2,7 @@
 
 from deslab import fsa, supcontrollable
 
-
-def synthesize(plant, specification, name, state_order_sources):
-    """Synthesize with DESlab and retain pre-synthesis numbering for the ST comparison."""
-    required = plant // specification
-    supervisor = supcontrollable(required, plant)
-    controllable = plant.Sigcon | (specification.Sigcon - plant.Sigma)
-    supervisor = supervisor.setpar(name=name, Sigcon=supervisor.Sigma & controllable)
-    state_order_sources[id(supervisor)] = required
-    return supervisor
+from generator import _generate_st
 
 
 class ExampleComponents:
@@ -19,6 +11,16 @@ class ExampleComponents:
     def __init__(self):
         self._events = {}
         self._transitions = {}
+        self._state_order_sources = {}
+
+    def synthesize(self, plant, specification, name):
+        """Synthesize with DESlab and retain pre-synthesis numbering for the ST comparison."""
+        required = plant // specification
+        supervisor = supcontrollable(required, plant)
+        controllable = plant.Sigcon | (specification.Sigcon - plant.Sigma)
+        supervisor = supervisor.setpar(name=name, Sigcon=supervisor.Sigma & controllable)
+        self._state_order_sources[id(supervisor)] = required
+        return supervisor
 
     @property
     def event_order(self):
@@ -64,5 +66,14 @@ class ExampleComponents:
         self._transitions[model] = tuple(transitions)
         return model
 
-    def transition_order(self, models):
-        return {id(model): self._transitions[model] for model in models if model in self._transitions}
+    def emit_st(self, supervisors, plants, actuators, namest, *,
+                output_dir, Mask=None, Isolated=None, initial="null"):
+        auxiliary = Isolated[0] if Isolated else ()
+        return _generate_st(
+            supervisors, plants, actuators, namest, Mask, Isolated, initial,
+            output_dir=output_dir, event_order=self.event_order,
+            state_order_sources=self._state_order_sources,
+            transition_order={
+                id(model): self._transitions[model] for model in auxiliary if model in self._transitions
+            },
+        )

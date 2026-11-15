@@ -5,8 +5,7 @@ from pathlib import Path
 
 from deslab import allevents
 
-from example_models import ExampleComponents, synthesize
-from generator import generate_ST_OPENPLC
+from example_models import ExampleComponents
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "ST_Generated"
@@ -50,7 +49,6 @@ def build(output_dir=DEFAULT_OUTPUT_DIR):
     Mask['GD_IN_11'] = [('GD_OUT_13', '%QX101.3')]
 
     components = ExampleComponents()
-    state_order_sources = {}
 
     Lids_conveyor = components.component(
         'lids_conveyor', 2, range(2),
@@ -186,34 +184,33 @@ def build(output_dir=DEFAULT_OUTPUT_DIR):
     plant1 = Lids_conveyor // Lid_clamp
     all = allevents(plant1)
     spec = buffer_lid // Lid_clamp_REQ // start_lid_conveyor // all
-    sup1 = synthesize(plant1, spec, 'SUP', state_order_sources)
+    sup1 = components.synthesize(plant1, spec, 'SUP')
 
     plant2 = Lid_clamp // Grab // z_axis // x_axis
     all2 = allevents(plant2)
     spec2 = arm_behaviour // all2
-    sup2 = synthesize(plant2, spec2, 'sup2', state_order_sources)
+    sup2 = components.synthesize(plant2, spec2, 'sup2')
 
     plant3 = Base_clamp // Grab // x_axis
     all3 = allevents(plant3)
     spec3 = complete_piece // all3
-    sup3 = synthesize(plant3, spec3, 'sup3', state_order_sources)
+    sup3 = components.synthesize(plant3, spec3, 'sup3')
 
     plant4 = Base_conveyor // Base_clamp
     all4 = allevents(plant4)
     spec4 = buffer_base // Base_clamp_REQ // start_base_conveyor // all4
-    sup4 = synthesize(plant4, spec4, 'sup4', state_order_sources)
+    sup4 = components.synthesize(plant4, spec4, 'sup4')
 
     plant5 = Base_clamp // Blade
     all5 = allevents(plant5)
     spec5 = leave // all5
-    sup5 = synthesize(plant5, spec5, 'sup5', state_order_sources)
+    sup5 = components.synthesize(plant5, spec5, 'sup5')
 
-    return generate_ST_OPENPLC(
+    return components.emit_st(
         [sup1, sup2, sup3, sup4, sup5],
         [plant1, plant2, plant3, plant4, plant5],
         actuators, 'Assembly_line', Mask=Mask,
-        output_dir=output_dir, event_order=components.event_order,
-        state_order_sources=state_order_sources,
+        output_dir=output_dir,
     )
 
 
