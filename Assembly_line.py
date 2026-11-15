@@ -3,7 +3,10 @@
 from argparse import ArgumentParser
 from pathlib import Path
 
-from generator import process
+from deslab import allevents
+
+from example_models import ExampleComponents, synthesize
+from generator import generate_ST_OPENPLC
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "ST_Generated"
@@ -46,159 +49,171 @@ def build(output_dir=DEFAULT_OUTPUT_DIR):
     Mask['GD_IN_10'] = [('GD_OUT_12', '%QX101.2')]
     Mask['GD_IN_11'] = [('GD_OUT_13', '%QX101.3')]
 
-    new_process = process(output_dir)
+    components = ExampleComponents()
+    state_order_sources = {}
 
-    Lids_conveyor = new_process.new_automaton('lids_conveyor')
-    new_process.add_state(Lids_conveyor, 2, ['lids_on', 'lids_off'], marked=[True, True])
-    new_process.add_transition(Lids_conveyor, [(0, 1), (1, 0)], ['lids_conveyor_on', 'lids_conveyor_off'],
-                               uncontrollable=[])
+    Lids_conveyor = components.component(
+        'lids_conveyor', 2, range(2),
+        [(0, 'lids_conveyor_on', 1), (1, 'lids_conveyor_off', 0)],
+    )
 
-    start_lid_conveyor = new_process.new_automaton('start')
-    new_process.add_state(start_lid_conveyor, 2, ["waiting", 'start'], [False, True])
-    new_process.add_transition(start_lid_conveyor, [(0, 1), (1, 1)], ['start_on', 'lids_conveyor_on'],
-                               ['start_on'])
-    new_process.add_self_event(Lids_conveyor, 'start_on')
+    start_lid_conveyor = components.component(
+        'start', 2, [1],
+        [(0, 'start_on', 1), (1, 'lids_conveyor_on', 1)],
+        uncontrollable=['start_on'],
+    )
+    Lids_conveyor = components.allow(Lids_conveyor, 'start_on')
 
-    Lid_clamp = new_process.new_automaton('Lid_clamp')
-    new_process.add_state(Lid_clamp, 2, names=["Lid_clamp_off", "Lid_clamp_on"], marked=[True, True])
-    new_process.add_transition(Lid_clamp, [(0, 1), (1, 0)], ["Lid_clamp_on", "Lid_clamp_off"], uncontrollable=[])
+    Lid_clamp = components.component(
+        'Lid_clamp', 2, range(2),
+        [(0, 'Lid_clamp_on', 1), (1, 'Lid_clamp_off', 0)],
+    )
 
-    Lid_clamp_REQ = new_process.new_automaton('Lid_clamp_REQ')
-    new_process.add_state(Lid_clamp_REQ, 3, names=["on", "waiting", "off"], marked=[True, False, False])
-    new_process.add_transition(Lid_clamp_REQ, [(0, 1), (1, 2), (2, 0)],
-                               ["Lid_clamp_on", "lid_clampled", "Lid_clamp_off"],
-                               uncontrollable=['lid_clampled'])
-    new_process.add_self_event(Lid_clamp, 'lid_clampled')
+    Lid_clamp_REQ = components.component(
+        'Lid_clamp_REQ', 3, [0],
+        [(0, 'Lid_clamp_on', 1), (1, 'lid_clampled', 2), (2, 'Lid_clamp_off', 0)],
+        uncontrollable=['lid_clampled'],
+    )
+    Lid_clamp = components.allow(Lid_clamp, 'lid_clampled')
 
-    buffer_lid = new_process.new_automaton('buffer_lid')
-    new_process.add_state(buffer_lid, 5,
-                          ["On", "waiting", "Lid_arrived", "Stop_conveyor", "Turn_on_clamp"], [True])
-    new_process.add_transition(buffer_lid, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0)],
-                               ['lids_conveyor_on', 'lid_at_place_FE', "lids_conveyor_off", 'Lid_clamp_on',
-                                'Lid_clamp_off'], ['lid_at_place_FE'])
+    buffer_lid = components.component(
+        'buffer_lid', 5, [0],
+        [(0, 'lids_conveyor_on', 1), (1, 'lid_at_place_FE', 2), (2, 'lids_conveyor_off', 3),
+         (3, 'Lid_clamp_on', 4), (4, 'Lid_clamp_off', 0)],
+        uncontrollable=['lid_at_place_FE'],
+    )
 
-    new_process.add_self_event(Lid_clamp, 'lid_at_place_FE')
-    new_process.add_self_event(Lids_conveyor, 'lid_at_place_FE')
+    Lid_clamp = components.allow(Lid_clamp, 'lid_at_place_FE')
+    Lids_conveyor = components.allow(Lids_conveyor, 'lid_at_place_FE')
 
-    Grab = new_process.new_automaton('grab')
-    new_process.add_state(Grab, 2, names=["grab_off", "grab_on"], marked=[True, True])
-    new_process.add_transition(Grab, [(0, 1), (1, 0)], ["grab_on", "grab_off"], uncontrollable=[])
+    Grab = components.component(
+        'grab', 2, range(2),
+        [(0, 'grab_on', 1), (1, 'grab_off', 0)],
+    )
 
-    z_axis = new_process.new_automaton('z_axis')
-    new_process.add_state(z_axis, 4, names=["Retracted", '1', "Extended", '0'], marked=[True, True, True, True])
-    new_process.add_transition(z_axis, [(0, 1), (1, 2), (2, 3), (3, 0)],
-                               ["z_axis_on", 'z_movement_finish', "z_axis_off", 'z_movement_finish'],
-                               uncontrollable=['z_movement_finish'])
+    z_axis = components.component(
+        'z_axis', 4, range(4),
+        [(0, 'z_axis_on', 1), (1, 'z_movement_finish', 2), (2, 'z_axis_off', 3),
+         (3, 'z_movement_finish', 0)],
+        uncontrollable=['z_movement_finish'],
+    )
 
-    x_axis = new_process.new_automaton('x_axis')
-    new_process.add_state(x_axis, 4, names=["Retracted", '1', "Extended", '0'], marked=[True, True, True, True])
-    new_process.add_transition(x_axis, [(0, 1), (1, 2), (2, 3), (3, 0)],
-                               ["x_axis_on", 'x_movement_finish', "x_axis_off", 'x_movement_finish'],
-                               uncontrollable=['x_movement_finish'])
+    x_axis = components.component(
+        'x_axis', 4, range(4),
+        [(0, 'x_axis_on', 1), (1, 'x_movement_finish', 2), (2, 'x_axis_off', 3),
+         (3, 'x_movement_finish', 0)],
+        uncontrollable=['x_movement_finish'],
+    )
 
-    arm_behaviour = new_process.new_automaton('buffer_arm')
-    new_process.add_state(arm_behaviour, 16, list(range(0, 16)), [True, False, False, False, False, False, False])
-    new_process.add_transition(arm_behaviour, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7), (7, 8), (8, 9),
-                                               (9, 10), (10, 11), (11, 12), (12, 13), (13, 14), (14, 15), (15, 0)],
-                               ['lid_clampled', 'z_axis_on', 'z_movement_finish', 'grab_on', 'Lid_clamp_off', 'z_axis_off',
-                                'z_movement_finish', 'x_axis_on', 'x_movement_finish', 'z_axis_on', 'z_movement_finish',
-                                'grab_off', 'z_axis_off', 'z_movement_finish', 'x_axis_off', 'x_movement_finish'],
-                               ['lid_clampled', 'z_movement_finish', 'x_movement_finish'])
+    arm_behaviour = components.component(
+        'buffer_arm', 16, [0],
+        [(0, 'lid_clampled', 1), (1, 'z_axis_on', 2), (2, 'z_movement_finish', 3),
+         (3, 'grab_on', 4), (4, 'Lid_clamp_off', 5), (5, 'z_axis_off', 6),
+         (6, 'z_movement_finish', 7), (7, 'x_axis_on', 8), (8, 'x_movement_finish', 9),
+         (9, 'z_axis_on', 10), (10, 'z_movement_finish', 11), (11, 'grab_off', 12),
+         (12, 'z_axis_off', 13), (13, 'z_movement_finish', 14), (14, 'x_axis_off', 15),
+         (15, 'x_movement_finish', 0)],
+        uncontrollable=['lid_clampled', 'z_movement_finish', 'x_movement_finish'],
+    )
 
-    Base_conveyor = new_process.new_automaton('Base_conveyor')
-    new_process.add_state(Base_conveyor, 2, ['lids_on', 'lids_off'], marked=[True, True])
-    new_process.add_transition(Base_conveyor, [(0, 1), (1, 0)], ['bases_conveyor_on', 'bases_conveyor_off'],
-                               uncontrollable=[])
+    Base_conveyor = components.component(
+        'Base_conveyor', 2, range(2),
+        [(0, 'bases_conveyor_on', 1), (1, 'bases_conveyor_off', 0)],
+    )
 
-    Base_clamp = new_process.new_automaton('Base_clamp')
-    new_process.add_state(Base_clamp, 2, names=["Base_clamp_off", "Base_clamp_on"], marked=[True, True])
-    new_process.add_transition(Base_clamp, [(0, 1), (1, 0)], ["Base_clamp_on", "Base_clamp_off"], uncontrollable=[])
+    Base_clamp = components.component(
+        'Base_clamp', 2, range(2),
+        [(0, 'Base_clamp_on', 1), (1, 'Base_clamp_off', 0)],
+    )
 
-    Base_clamp_REQ = new_process.new_automaton('Base_clamp_REQ')
-    new_process.add_state(Base_clamp_REQ, 3, names=["On", "waiting", "Off"], marked=[True, False, False])
-    new_process.add_transition(Base_clamp_REQ, [(0, 1), (1, 2), (2, 0)],
-                               ["Base_clamp_on", "base_clampled", "Base_clamp_off"], uncontrollable=['base_clampled'])
-    new_process.add_self_event(Base_clamp, 'base_clampled')
+    Base_clamp_REQ = components.component(
+        'Base_clamp_REQ', 3, [0],
+        [(0, 'Base_clamp_on', 1), (1, 'base_clampled', 2), (2, 'Base_clamp_off', 0)],
+        uncontrollable=['base_clampled'],
+    )
+    Base_clamp = components.allow(Base_clamp, 'base_clampled')
 
-    start_base_conveyor = new_process.new_automaton('start_2')
-    new_process.add_state(start_base_conveyor, 2, ["waiting", 'start'], [False, True])
-    new_process.add_transition(start_base_conveyor, [(0, 1), (1, 1)], ['start_on', 'bases_conveyor_on'], ['start_on'])
-    new_process.add_self_event(Base_conveyor, 'start_on')
+    start_base_conveyor = components.component(
+        'start_2', 2, [1],
+        [(0, 'start_on', 1), (1, 'bases_conveyor_on', 1)],
+        uncontrollable=['start_on'],
+    )
+    Base_conveyor = components.allow(Base_conveyor, 'start_on')
 
-    buffer_base = new_process.new_automaton('buffer_base')
-    new_process.add_state(buffer_base, 5,
-                          ["On", "waiting", " Lid_arrived", "Stop_conveyor", "Turn_on_clamp"], [True])
-    new_process.add_transition(buffer_base, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0)],
-                               ['bases_conveyor_on', 'base_at_place_FE', "bases_conveyor_off", 'Base_clamp_on',
-                                'Base_clamp_off'], ['base_at_place_FE'])
+    buffer_base = components.component(
+        'buffer_base', 5, [0],
+        [(0, 'bases_conveyor_on', 1), (1, 'base_at_place_FE', 2), (2, 'bases_conveyor_off', 3),
+         (3, 'Base_clamp_on', 4), (4, 'Base_clamp_off', 0)],
+        uncontrollable=['base_at_place_FE'],
+    )
 
-    new_process.add_self_event(Base_clamp, 'base_at_place_FE')
-    new_process.add_self_event(Base_conveyor, 'base_at_place_FE')
+    Base_clamp = components.allow(Base_clamp, 'base_at_place_FE')
+    Base_conveyor = components.allow(Base_conveyor, 'base_at_place_FE')
 
-    Blade = new_process.new_automaton('blade')
-    new_process.add_state(Blade, 2, names=["knife_off", "knife_on"], marked=[True, True])
-    new_process.add_transition(Blade, [(0, 1), (1, 0)], ["blade_on", "blade_off"], uncontrollable=[])
+    Blade = components.component(
+        'blade', 2, range(2),
+        [(0, 'blade_on', 1), (1, 'blade_off', 0)],
+    )
 
-    complete_piece = new_process.new_automaton('complete_piece')
-    new_process.add_state(complete_piece, 5, [], marked=[True, False, False, False])
-    new_process.add_transition(complete_piece, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0)],
-                               ['Base_clamp_on', 'base_clampled', 'x_axis_on', 'grab_off', 'Base_clamp_off'],
-                               ['base_clampled'])
+    complete_piece = components.component(
+        'complete_piece', 5, [0],
+        [(0, 'Base_clamp_on', 1), (1, 'base_clampled', 2), (2, 'x_axis_on', 3),
+         (3, 'grab_off', 4), (4, 'Base_clamp_off', 0)],
+        uncontrollable=['base_clampled'],
+    )
 
-    leave = new_process.new_automaton('leave')
-    new_process.add_state(leave, 6, [], marked=[True, False, False, False])
-    new_process.add_transition(leave, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0)],
-                               ['Base_clamp_on', 'Base_clamp_off', 'blade_on', 'blade_pos_limit_on', 'part_leaving_FE',
-                                'blade_off', 'blade_pos_limit_on'], ['blade_pos_limit_on', 'part_leaving_FE'])
-    new_process.add_self_event(Blade, 'blade_pos_limit_on')
-    new_process.add_self_event(Blade, 'part_leaving_FE')
+    leave = components.component(
+        'leave', 6, [0],
+        [(0, 'Base_clamp_on', 1), (1, 'Base_clamp_off', 2), (2, 'blade_on', 3),
+         (3, 'blade_pos_limit_on', 4), (4, 'part_leaving_FE', 5), (5, 'blade_off', 0)],
+        uncontrollable=['blade_pos_limit_on', 'part_leaving_FE'],
+    )
+    Blade = components.allow(Blade, 'blade_pos_limit_on')
+    Blade = components.allow(Blade, 'part_leaving_FE')
 
-    new_process.complete_spec(start_lid_conveyor)
-    new_process.complete_spec(buffer_lid)
-    new_process.complete_spec(Lid_clamp_REQ)
+    start_lid_conveyor = components.complete_spec(start_lid_conveyor)
+    buffer_lid = components.complete_spec(buffer_lid)
+    Lid_clamp_REQ = components.complete_spec(Lid_clamp_REQ)
 
-    new_process.complete_spec(start_base_conveyor)
-    new_process.complete_spec(buffer_base)
-    new_process.complete_spec(Base_clamp_REQ)
+    start_base_conveyor = components.complete_spec(start_base_conveyor)
+    buffer_base = components.complete_spec(buffer_base)
+    Base_clamp_REQ = components.complete_spec(Base_clamp_REQ)
 
-    new_process.complete_spec(arm_behaviour)
-    new_process.complete_spec(complete_piece)
-    new_process.complete_spec(leave)
+    arm_behaviour = components.complete_spec(arm_behaviour)
+    complete_piece = components.complete_spec(complete_piece)
+    leave = components.complete_spec(leave)
 
-    new_process.generate_all_automata()
+    plant1 = Lids_conveyor // Lid_clamp
+    all = allevents(plant1)
+    spec = buffer_lid // Lid_clamp_REQ // start_lid_conveyor // all
+    sup1 = synthesize(plant1, spec, 'SUP', state_order_sources)
 
-    plant1 = new_process.automata_syncronize([Lids_conveyor, Lid_clamp], name_sync='Plant_M1')
-    all = new_process.all_events(plant1, 'ALL')
-    spec = new_process.automata_syncronize([buffer_lid, Lid_clamp_REQ, start_lid_conveyor, all], name_sync='SPEC')
-    sup1 = new_process.supcon(plant1, spec, 'SUP')
+    plant2 = Lid_clamp // Grab // z_axis // x_axis
+    all2 = allevents(plant2)
+    spec2 = arm_behaviour // all2
+    sup2 = synthesize(plant2, spec2, 'sup2', state_order_sources)
 
-    plant2 = new_process.automata_syncronize([Lid_clamp, Grab, z_axis, x_axis], name_sync='plant2')
-    all2 = new_process.all_events(plant2, 'all2')
-    spec2 = new_process.automata_syncronize([arm_behaviour, all2], name_sync='spec2')
-    sup2 = new_process.supcon(plant2, spec2, 'sup2')
+    plant3 = Base_clamp // Grab // x_axis
+    all3 = allevents(plant3)
+    spec3 = complete_piece // all3
+    sup3 = synthesize(plant3, spec3, 'sup3', state_order_sources)
 
-    plant3 = new_process.automata_syncronize([Base_clamp, Grab, x_axis], name_sync='plant3')
-    all3 = new_process.all_events(plant3, 'all3')
-    spec3 = new_process.automata_syncronize([complete_piece, all3], name_sync='spec3')
-    sup3 = new_process.supcon(plant3, spec3, 'sup3')
+    plant4 = Base_conveyor // Base_clamp
+    all4 = allevents(plant4)
+    spec4 = buffer_base // Base_clamp_REQ // start_base_conveyor // all4
+    sup4 = synthesize(plant4, spec4, 'sup4', state_order_sources)
 
-    plant4 = new_process.automata_syncronize([Base_conveyor, Base_clamp], name_sync='plant4')
-    all4 = new_process.all_events(plant4, 'all4')
-    spec4 = new_process.automata_syncronize([buffer_base, Base_clamp_REQ, start_base_conveyor, all4], name_sync='spec4')
-    sup4 = new_process.supcon(plant4, spec4, 'sup4')
+    plant5 = Base_clamp // Blade
+    all5 = allevents(plant5)
+    spec5 = leave // all5
+    sup5 = synthesize(plant5, spec5, 'sup5', state_order_sources)
 
-    plant5 = new_process.automata_syncronize([Base_clamp, Blade], name_sync='plant5')
-    all5 = new_process.all_events(plant5, 'all5')
-    spec5 = new_process.automata_syncronize([leave, all5], name_sync='spec5')
-    sup5 = new_process.supcon(plant5, spec5, 'sup5')
-
-    new_process.load_automata([sup1, sup2, sup3, sup4, sup5])
-    new_process.load_automata([plant1, plant2, plant3, plant4, plant5])
-
-    return new_process.generate_ST_OPENPLC(
+    return generate_ST_OPENPLC(
         [sup1, sup2, sup3, sup4, sup5],
         [plant1, plant2, plant3, plant4, plant5],
         actuators, 'Assembly_line', Mask=Mask,
+        output_dir=output_dir, event_order=components.event_order,
+        state_order_sources=state_order_sources,
     )
 
 

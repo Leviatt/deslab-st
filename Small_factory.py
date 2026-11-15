@@ -3,7 +3,10 @@
 from argparse import ArgumentParser
 from pathlib import Path
 
-from generator import process
+from deslab import allevents
+
+from example_models import ExampleComponents, synthesize
+from generator import generate_ST_OPENPLC
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "ST_Generated"
@@ -54,137 +57,129 @@ def build(output_dir=DEFAULT_OUTPUT_DIR):
     Mask['GD_OUT_2'] = [('GD_OUT_3', '%QX100.3')]  # BANDM1 -> EMITER
     Mask['NOT GD_IN_10'] = [('GD_OUT_8', '%QX101.0')]  # M1_BROKEN -> M1_BROKEN
     Mask['NOT GD_IN_11'] = [('GD_OUT_9', '%QX101.1')]  # M2_BROKEN -> M2_BROKEN
-    new_process = process(output_dir)
+    components = ExampleComponents()
+    state_order_sources = {}
 
-    M1 = new_process.new_automaton('M1')
-    new_process.add_state(M1, number_of_states=4, names=[], marked=[True, True, True, True])
-    new_process.add_transition(M1, transitions=[(0, 1), (1, 2), (2, 3), (3, 0)],
-                               events=['M1_ON', 'M1_Bussy', 'M1_OFF', 'M1_END'],
-                               uncontrollable=['M1_ON', 'M1_Bussy', 'M1_END'])  # 'M1_ON'
-    new_process.add_self_events(M1, ['M1_ON', 'M1_Bussy', 'M1_END'])
+    M1 = components.component(
+        'M1', 4, [0, 1, 2, 3],
+        [(0, 'M1_ON', 1), (1, 'M1_Bussy', 2), (2, 'M1_OFF', 3), (3, 'M1_END', 0)],
+        uncontrollable=['M1_ON', 'M1_Bussy', 'M1_END'],
+    )
+    M1 = components.allow(M1, 'M1_ON', 'M1_Bussy', 'M1_END')
 
-    Buffer_fill = new_process.new_automaton('Buffer_fill')
-    new_process.add_state(Buffer_fill, 10, [], [True, True, True, True, True, True, True, True, True, True, True])
-    new_process.add_transition(Buffer_fill, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5),
-                                             (5, 2), (7, 2),
-                                             (5, 6), (6, 7), (7, 8), (8, 5),
-                                             (1, 9), (9, 1)],
-                               ['start', 'M1_END', 'Buffer_conveyor_ON', 'Piece_ready', 'Buffer_conveyor_OFF',
-                                'M2_END', 'M2_END',
-                                'M1_END', 'Buffer_conveyor_ON', 'Piece_located', 'Buffer_conveyor_OFF',
-                                'M1_BROKEN', 'M1_END'],
-                               ['start', 'M1_END', 'M2_END', 'Piece_ready', 'Piece_located', 'M1_BROKEN'])
+    Buffer_fill = components.component(
+        'Buffer_fill', 10, range(10),
+        [(0, 'start', 1), (1, 'M1_END', 2), (2, 'Buffer_conveyor_ON', 3), (3, 'Piece_ready', 4),
+         (4, 'Buffer_conveyor_OFF', 5), (5, 'M2_END', 2), (7, 'M2_END', 2), (5, 'M1_END', 6),
+         (6, 'Buffer_conveyor_ON', 7), (7, 'Piece_located', 8), (8, 'Buffer_conveyor_OFF', 5),
+         (1, 'M1_BROKEN', 9), (9, 'M1_END', 1)],
+        uncontrollable=['start', 'M1_END', 'M2_END', 'Piece_ready', 'Piece_located', 'M1_BROKEN'],
+    )
 
-    Blade = new_process.new_automaton('Blade')
-    new_process.add_state(Blade, 4, [], [])
-    new_process.add_transition(Blade, [(0, 1), (1, 2), (2, 3), (3, 0)],
-                               ['M2_END', 'Blade_OFF', 'Piece_ready', 'Blade_ON'],
-                               ['M2_END', 'Piece_ready'])
+    Blade = components.component(
+        'Blade', 4, [],
+        [(0, 'M2_END', 1), (1, 'Blade_OFF', 2), (2, 'Piece_ready', 3), (3, 'Blade_ON', 0)],
+        uncontrollable=['M2_END', 'Piece_ready'],
+    )
 
-    generate = new_process.new_automaton('generate')
-    new_process.add_state(generate, 6, [], [])
-    new_process.add_transition(generate, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0), (1, 5), (5, 0)],
-                               ['M1_Bussy', 'M1_END', 'Piece_restart_ON', 'Piece_located', 'Piece_restart_OFF',
-                                'M1_BROKEN', 'M1_END'],
-                               ['Piece_located', 'M1_Bussy', 'M1_END', 'M1_BROKEN', 'M1_END'])
+    generate = components.component(
+        'generate', 6, [],
+        [(0, 'M1_Bussy', 1), (1, 'M1_END', 2), (2, 'Piece_restart_ON', 3),
+         (3, 'Piece_located', 4), (4, 'Piece_restart_OFF', 0), (1, 'M1_BROKEN', 5),
+         (5, 'M1_END', 0)],
+        uncontrollable=['Piece_located', 'M1_Bussy', 'M1_END', 'M1_BROKEN'],
+    )
 
-    M2 = new_process.new_automaton('M2')
-    new_process.add_state(M2, 4, [], [True, True, True, True])
-    new_process.add_transition(M2, [(0, 1), (1, 2), (2, 3), (3, 0)], ['M2_ON', 'M2_Bussy', 'M2_OFF', 'M2_END'],
-                               ['M2_ON', 'M2_Bussy', 'M2_END'])
+    M2 = components.component(
+        'M2', 4, [0, 1, 2, 3],
+        [(0, 'M2_ON', 1), (1, 'M2_Bussy', 2), (2, 'M2_OFF', 3), (3, 'M2_END', 0)],
+        uncontrollable=['M2_ON', 'M2_Bussy', 'M2_END'],
+    )
 
-    B_A = new_process.new_automaton('B_A')
-    new_process.add_state(B_A, number_of_states=4, names=[], marked=[True, True, True, True])
-    new_process.add_transition(B_A, transitions=[(0, 1), (1, 2), (2, 3), (3, 0)],
-                               events=['BA_ON', 'Fed', 'BA_OFF', 'M1_END'], uncontrollable=['Fed', 'M1_END'])
+    B_A = components.component(
+        'B_A', 4, [0, 1, 2, 3],
+        [(0, 'BA_ON', 1), (1, 'Fed', 2), (2, 'BA_OFF', 3), (3, 'M1_END', 0)],
+        uncontrollable=['Fed', 'M1_END'],
+    )
 
-    start = new_process.new_automaton('start')
-    new_process.add_state(start, number_of_states=2, names=["waiting", 'start'], marked=[True, True])
-    new_process.add_transition(start, transitions=[(0, 1), (1, 1)], events=['start', 'BA_ON'], uncontrollable=['start'])
-    new_process.add_self_event(B_A, event='start')
-    new_process.complete_spec(start)
+    start = components.component(
+        'start', 2, [0, 1],
+        [(0, 'start', 1), (1, 'BA_ON', 1)],
+        uncontrollable=['start'],
+    )
+    B_A = components.allow(B_A, 'start')
+    start = components.complete_spec(start)
 
-    model_M1 = new_process.new_automaton('model_M1')
-    new_process.add_state(model_M1, number_of_states=3, names=[], marked=[True, False, False])
-    new_process.add_transition(model_M1, transitions=[(0, 1), (1, 0), (1, 2), (2, 0)],
-                               events=['11', 'Piece_located', 'M1_BROKEN', 'M1_NOT_Bussy'],
-                               uncontrollable=['Piece_located', 'M1_BROKEN', 'M1_NOT_Bussy'])
+    model_M1 = components.component(
+        'model_M1', 3, [0],
+        [(0, '11', 1), (1, 'Piece_located', 0), (1, 'M1_BROKEN', 2), (2, 'M1_NOT_Bussy', 0)],
+        uncontrollable=['Piece_located', 'M1_BROKEN', 'M1_NOT_Bussy'],
+    )
 
-    model_M2 = new_process.new_automaton('model_M2')
-    new_process.add_state(model_M2, 3, [], [True, False, False])
-    new_process.add_transition(model_M2, [(0, 1), (1, 0), (1, 2), (2, 0)],
-                               ['21', 'M2_END', 'M2_BROKEN', 'M2_END'],
-                               ['M2_END', 'M2_BROKEN'])
+    model_M2 = components.component(
+        'model_M2', 3, [0],
+        [(0, '21', 1), (1, 'M2_END', 0), (1, 'M2_BROKEN', 2), (2, 'M2_END', 0)],
+        uncontrollable=['M2_END', 'M2_BROKEN'],
+    )
 
-    REQ_Buffer = new_process.new_automaton('REQ_Buffer')
-    new_process.add_state(REQ_Buffer, 3, [], [True, True, True])
-    new_process.add_transition(REQ_Buffer, [(0, 1), (1, 0), (1, 2), (2, 1)],
-                               ['Piece_located', '21', 'Piece_located', '21'],
-                               ['Piece_located'])
+    REQ_Buffer = components.component(
+        'REQ_Buffer', 3, [0, 1, 2],
+        [(0, 'Piece_located', 1), (1, '21', 0), (1, 'Piece_located', 2), (2, '21', 1)],
+        uncontrollable=['Piece_located'],
+    )
 
-    REQ_repair = new_process.new_automaton('REQ_repair')
-    new_process.add_state(REQ_repair, 2, [], [True, True])
-    new_process.add_transition(REQ_repair, [(0, 0), (0, 1), (1, 0)],
-                               ['M1_REPAIR_OUT_ON', 'M2_BROKEN', 'M2_REPAIR_OUT_ON'],
-                               ['M2_BROKEN'])
+    REQ_repair = components.component(
+        'REQ_repair', 2, [0, 1],
+        [(0, 'M1_REPAIR_OUT_ON', 0), (0, 'M2_BROKEN', 1), (1, 'M2_REPAIR_OUT_ON', 0)],
+        uncontrollable=['M2_BROKEN'],
+    )
 
-    new_process.complete_spec(REQ_repair)
+    REQ_repair = components.complete_spec(REQ_repair)
 
-    REQ_start = new_process.new_automaton('REQ_start')
-    new_process.add_state(REQ_start, 2, ["waiting", 'start'], [True, True])
-    new_process.add_transition(REQ_start, [(0, 1), (1, 1), (1, 1)], ['start', '11', '21'], ['start'])
-    new_process.add_self_event(model_M1, 'start')
+    REQ_start = components.component(
+        'REQ_start', 2, [0, 1],
+        [(0, 'start', 1), (1, '11', 1), (1, '21', 1)],
+        uncontrollable=['start'],
+    )
+    model_M1 = components.allow(model_M1, 'start')
 
-    new_process.complete_spec(REQ_start)
+    REQ_start = components.complete_spec(REQ_start)
 
     # Ideal model have the repair action as a controllable event, but if it is controllable when the supervisor get a machine broken
     # It will repair the machine in the same cicle, therefore a new automaton called "repair" its created to work with an button
     # The button will repair the machine and start the event M1_REPAIR_OUT_ON
 
-    repair = new_process.new_automaton('repair')
-    new_process.add_state(repair, number_of_states=20, names=[], marked=[True, True, True, True, True, True, True, True,
-                                                                         True, True, True, True, True, True, True, True,
-                                                                         True, True, True, True])
-    new_process.add_transition(repair, transitions=[(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 0),
-                                                    (0, 7), (7, 8), (8, 9), (9, 10), (10, 11), (11, 12), (12, 0),
-                                                    (2, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 19), (19, 1),
-                                                    (8, 15) ],
-                               events=['M1_BROKEN', 'R1_PERMITTED', 'M1_REPAIR', 'M1_REPAIR_OUT_ON', 'R1_NOT_PERMITTED',
-                                       'M1_NOT_Bussy', 'M1_REPAIR_OUT_OFF',
+    repair = components.component(
+        'repair', 20, range(20),
+        [(0, 'M1_BROKEN', 1), (1, 'R1_PERMITTED', 2), (2, 'M1_REPAIR', 3),
+         (3, 'M1_REPAIR_OUT_ON', 4), (4, 'R1_NOT_PERMITTED', 5), (5, 'M1_NOT_Bussy', 6),
+         (6, 'M1_REPAIR_OUT_OFF', 0), (0, 'M2_BROKEN', 7), (7, 'R2_PERMITTED', 8),
+         (8, 'M2_REPAIR', 9), (9, 'M2_REPAIR_OUT_ON', 10), (10, 'R2_NOT_PERMITTED', 11),
+         (11, 'M2_END', 12), (12, 'M2_REPAIR_OUT_OFF', 0), (2, 'M2_BROKEN', 13),
+         (13, 'R1_NOT_PERMITTED', 14), (14, 'R2_PERMITTED', 15), (15, 'M2_REPAIR', 16),
+         (16, 'M2_REPAIR_OUT_ON', 17), (17, 'R2_NOT_PERMITTED', 18), (18, 'M2_END', 19),
+         (19, 'M2_REPAIR_OUT_OFF', 1), (8, 'M1_BROKEN', 15)],
+        uncontrollable=['M1_BROKEN', 'M2_BROKEN', 'M1_REPAIR', 'M2_REPAIR', 'M1_NOT_Bussy', 'M2_END'],
+    )
 
-                                       'M2_BROKEN', 'R2_PERMITTED', 'M2_REPAIR', 'M2_REPAIR_OUT_ON', 'R2_NOT_PERMITTED',
-                                       'M2_END', 'M2_REPAIR_OUT_OFF',
+    plant_BA = B_A
+    spec_BA = start // allevents(plant_BA)
+    sup_BA = synthesize(plant_BA, spec_BA, 'sup_BA', state_order_sources)
 
-                                       'M2_BROKEN', 'R1_NOT_PERMITTED', 'R2_PERMITTED', 'M2_REPAIR', 'M2_REPAIR_OUT_ON',
-                                       'R2_NOT_PERMITTED', 'M2_END', 'M2_REPAIR_OUT_OFF',
-
-                                       'M1_BROKEN'],
-                               uncontrollable=['M1_BROKEN', 'M2_BROKEN', 'M1_REPAIR', 'M2_REPAIR', 'M1_NOT_Bussy',
-                                               'M2_END'])
-
-    new_process.generate_all_automata()
-
-    plant_BA = new_process.automata_syncronize([B_A], name_sync='plant_BA')
-    all_BA = new_process.all_events(plant_BA, 'all_BA')
-    spec_BA = new_process.automata_syncronize([start, all_BA], name_sync='spec_BA')
-    sup_BA = new_process.supcon(plant_BA, spec_BA, 'sup_BA')
-
-    new_process.load_automata([plant_BA, sup_BA])
-
-    plant = new_process.automata_syncronize([model_M1, model_M2], name_sync='PLANT')
-    all = new_process.all_events(plant, 'ALL')
-    spec = new_process.automata_syncronize([REQ_Buffer, REQ_start, REQ_repair, all], name_sync='SPEC')
-    sup = new_process.supcon(plant, spec, 'SUP')
-
-    new_process.load_automata([plant, sup])
+    plant = model_M1 // model_M2
+    spec = REQ_Buffer // REQ_start // REQ_repair // allevents(plant)
+    sup = synthesize(plant, spec, 'SUP', state_order_sources)
 
     isolated = [
         [M1, M2, sup_BA, generate, Buffer_fill, Blade, repair],
         [('21', 'M2_ON'), ('11', 'M1_ON')],
     ]
-    return new_process.generate_ST_OPENPLC(
+    return generate_ST_OPENPLC(
         [sup], [plant], actuators, 'Small_factory',
         Mask=Mask, Isolated=isolated, initial='start',
+        output_dir=output_dir, event_order=components.event_order,
+        state_order_sources=state_order_sources,
+        transition_order=components.transition_order(isolated[0]),
     )
 
 

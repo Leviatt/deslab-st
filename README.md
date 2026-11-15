@@ -34,7 +34,7 @@ This two-state supervisor starts a motor from idle and returns to idle when a se
 
 ```python
 from deslab import fsa, parallel, supcontrollable
-from generator import process
+from generator import generate_ST_OPENPLC
 
 G = fsa(
     ["idle", "running"],
@@ -61,17 +61,16 @@ actuators = {
     "finished": "RE_Finished:Sensor:%IX0.0",
 }
 
-project = process("ST_Generated")
-project.register_automaton("supervisor", S, controllable=G.Sigcon)
-project.load_automata(["supervisor"])
-project.generate_ST_OPENPLC(["supervisor"], actuators=actuators, namest="controller")
+generate_ST_OPENPLC([S], plants=[G], actuators=actuators, namest="controller")
 ```
 
 An `fsa` defines states, events, transitions as `(source, event, destination)` triples, initial states, marked states, and controllable events. Use `parallel` to compose components or synchronize the plant with a specification. Use `supcontrollable(specification, plant)` to synthesize the supervisor.
 
-When registering an existing supervisor, pass the original plant's `Sigcon`. Each imported model must be deterministic and reachable with one initial state and no epsilon transitions. Its initial state becomes ST state 0.
+Pass DESlab automata directly to `generate_ST_OPENPLC`. The function reads the enabled events and transitions from the models already in memory. Each model must be deterministic and reachable with one initial state and no epsilon transitions. Its initial state becomes ST state 0.
 
-For a model with no controllable events, pass `controllable=[]` explicitly. The pinned DESlab version can interpret `Sigcon=[]` in the `fsa` constructor as all events controllable.
+When a plant is provided, it determines controllability for events in its alphabet. For a single supervisor with correct controllability already set, the call can be as short as `generate_ST_OPENPLC([S], actuators=actuators, namest="controller")`.
+
+For a model with no controllable events, set `model = model.setpar(Sigcon=[])`. The pinned DESlab version can interpret `Sigcon=[]` in the `fsa` constructor as all events controllable.
 
 ### Visualize automata
 
@@ -87,12 +86,14 @@ draw(G, H, S)
 
 | Argument | Meaning |
 | --- | --- |
-| `supervisors` | Names of the loaded supervisor automata, in the order used to emit and evaluate them. |
-| `plants` | Registered plant names in supervisor order. Required when passing multiple supervisors. |
+| `supervisors` | DESlab supervisor automata, in the order used to emit and evaluate them. |
+| `plants` | DESlab plant automata in supervisor order. Required when passing multiple supervisors. |
 | `actuators` | Event-to-signal mapping for supervisors, auxiliary automata, and startup events. |
 | `Mask` | Mapping from a source PLC variable to a list of `(mirror_variable, address)` pairs. |
-| `Isolated` | A two-item list `[automaton_names, event_pairs]`. The loaded auxiliary automata get their own ST state variables. Each `(trigger_event, output_event)` pair adds direct signal logic. See `Small_factory.py` for an example. |
+| `Isolated` | A two-item list `[automata, event_pairs]`. The auxiliary DESlab automata get their own ST state variables. Each `(trigger_event, output_event)` pair adds direct signal logic. See `Small_factory.py` for an example. |
 | `initial` | A mapped event whose signal enables the controller. The default `"null"` starts processing immediately. |
+| `namest`, `output_dir` | Output filename stem and destination directory. The function also returns the ST source as a string. |
+| `event_order` | Optional event priority order for generated branches. Events without an explicit priority are ordered by name. |
 
 Map each event to one of these signal forms.
 
@@ -104,8 +105,8 @@ The generated program targets OpenPLC with a 20 ms task and an OpenPLC-specific 
 
 ## Repository layout
 
-- [`generator.py`](generator.py) loads models and emits OpenPLC Structured Text.
-- [`deslab_backend.py`](deslab_backend.py) provides model composition, supervisor synthesis, conflict detection, and coordinator reduction.
+- [`generator.py`](generator.py) emits OpenPLC Structured Text from in-memory DESlab models.
+- [`deslab_backend.py`](deslab_backend.py) handles the graph operations used for supervisor coordination.
 - [`Small_factory.py`](Small_factory.py), [`Assembly_line.py`](Assembly_line.py), and [`Transfer_line.py`](Transfer_line.py) define the three examples and their PLC signal maps.
 - `ST_Generated/` is the default local output directory.
 

@@ -5,170 +5,68 @@ from pathlib import Path
 from deslab_backend import DeslabBackend
 
 
-class State:  # Automaton state structure
-    def __init__(self, id):
-        self.id = id
-        self.active_events = []
+class _STEmitter(DeslabBackend):
+    """Emit directly from DESlab models using only ST state numbering."""
 
-    def __str__(self):
-        return "id: " + str(self.id) + ", name: " + str(self.active_events)
-
-    def add_active_event(self, event: str):  # Add active events
-        try:
-            self.active_events.append(event)
-        except:
-            print(event)
-            print(self.id)
-
-    def __repr__(self):
-        # return "{ " + str(self.id) + " ," + str(self.active_events) + ", ev: " + str(self.active_events) + "}"
-        return str(self.id)
-
-    def get_active_events(self):  # Get active events
-        return self.active_events
-
-    def get_id(self):  # Get the state id
-        return self.id
-
-
-
-class Automata:  # Automaton structure
-    def __init__(self, name: str):
-        self.name = name
-        self.c_events = []
-        self.uc_events = []
-        self.transitions = []
-        self.states = []
-        self.dict_events = dict([])
-        self.dict_states = dict([])
-        self.states_marked = []
-
-    def __str__(self):
-        return "name: " + str(self.name) + ", # states: " + str(len(self.states)) + ", # transitions: " + str(
-            len(self.transitions))
-
-    def add_state(self, number_of_states: int, names: list, marked: list):  # Add state in the automaton
-        dif_mark = number_of_states - len(marked)
-        if dif_mark > 0:
-            for i in range(0, dif_mark):
-                marked.append(False)
-        for i in range(0, number_of_states):
-            state = State(i)
-            self.states.append(state)
-            self.dict_states[names[i]] = i
-            if marked[i]:
-                self.states_marked.append(names[i])
-
-    def add_transition(self, transitions: list, event: list, uncontrollable: list = [], uc_events: list = [],
-                       c_events: list = [], dict_events: dict = [], dict_events_name: dict = []):
-        # Add a transition in the automaton
-        uncontrolled = set(uncontrollable)
-        local_uncontrolled = set(self.uc_events)
-        local_controlled = set(self.c_events)
-        for i in range(0, len(event)):
-            if event[i] not in local_uncontrolled and event[i] in uncontrolled:
-                self.uc_events.append(event[i])
-                local_uncontrolled.add(event[i])
-            if event[i] not in local_controlled and event[i] not in uncontrolled:
-                self.c_events.append(event[i])
-                local_controlled.add(event[i])
-
-            if event[i] not in dict_events.keys():
-                if event[i] in uncontrolled:
-                    if event[i] not in uc_events:
-                        uc_events.append(event[i])
-                        id = 2 * (len(uc_events) - 1)
-                        dict_events[event[i]] = str(id)
-                        dict_events_name[str(id)] = event[i]
-                else:
-                    if event[i] not in c_events:
-                        c_events.append(event[i])
-                        id = 2 * (len(c_events) - 1) + 1
-                        dict_events[event[i]] = str(id)
-                        dict_events_name[str(id)] = event[i]
-
-        for i in range(0, len(transitions)):
-            self.states[transitions[i][0]].add_active_event(event[i])
-            self.transitions.append((transitions[i][0], int(dict_events.get(event[i])), transitions[i][1]))
-
-
-
-class process(DeslabBackend):
-    def __init__(self, output_dir="ST_Generated"):
-        self.automatas = dict([])
-        self.dict_events = dict([])
-        self.dict_events_name = dict([])
-        self.dict_states = dict([])
-        self.c_events = []
-        self.uc_events = []
-        self.models = {}
-        self.state_order_sources = {}
+    def __init__(self, output_dir, event_order, state_order_sources, transition_order):
         self.output_dir = Path(output_dir)
+        self.models = {}
+        self.source_order = state_order_sources or {}
+        self.transition_order = transition_order or {}
+        self.dict_events = {event: index for index, event in enumerate(event_order or ())}
+        self.controllable = {}
+        self.numbering = {}
+        self.event_lists = {}
 
-    def get_automaton(self, name) -> Automata:  # Get a specfic automaton by its name
-        return self.automatas[name]
-
-
-    def print_events(self, actuators=[]):  # Print in console all events
-        aux = list(map(int, self.dict_events.values()))
-        aux.sort()
-        aux = list(map(str, aux))
-        if len(actuators) == 0:
-            for n in aux:
-                print(n + " -> " + self.dict_events_name[n])
+    def _prepare_emission(self, name):
+        model = self.models[name]
+        self._require_deterministic(name, model)
+        source = self.source_order.get(id(model), model)
+        if id(model) in self.transition_order:
+            ordered = sorted(model.X)
+        elif hasattr(source, "Gamma"):
+            ordered = [state for state in self._breadth_first_states(source) if state in model.X]
         else:
-            for n in aux:
-                print(n + " -> " + self.dict_events_name[n] + " : " + actuators[self.dict_events_name[n]])
+            ordered = list(source)
+        if set(ordered) != model.X or len(ordered) != len(model.X):
+            raise ValueError(f"{name!r} must have a complete ordering of reachable states")
+        if ordered[0] not in model.X0:
+            raise ValueError(f"{name!r} must start at ST state 0")
+        self.numbering[name] = {state: index for index, state in enumerate(ordered)}
+        enabled = dict.fromkeys(event for _, event, _, _ in self._transitions(name))
+        controlled = self.controllable.get(name, model.Sigcon)
+        self.event_lists[name] = (
+            [event for event in enabled if event in controlled],
+            [event for event in enabled if event not in controlled],
+        )
 
+    def _events(self, name):
+        return self.event_lists[name]
 
-    def complete_spec(self, name):  # For an automaton add all the self-loops of uncontrollable events
-        for s in self.automatas[name].states:
-            for e in self.automatas[name].uc_events:
-                active_events = s.get_active_events()
-                if e not in active_events:
-                    self.add_transition(name, [(s.get_id(), s.get_id())], [e], [e])
+    def _transitions(self, name):
+        model = self.models[name]
+        numbering = self.numbering[name]
+        controlled = self.controllable.get(name, model.Sigcon)
+        declaration = self.transition_order.get(id(model))
+        if declaration is None:
+            order = ((state, event) for state in numbering for event in self._ordered_events(model, state))
+        else:
+            order = declaration
+        for state, event in order:
+            yield numbering[state], event, numbering[model.delta(state, event)], event in controlled
 
-
-    def add_self_events(self, name, events: list):  # Add a self loop  for each event in events in an automaton
-        for e in events:
-            self.add_self_event(name, e)
-
-
-    def add_self_event(self, name, event, uncontrollable: bool = False):  # Add a self loop of one event in an automaton
-        for s in self.automatas[name].states:
-            active_events = s.get_active_events()
-            if event not in active_events:
-                if event not in self.c_events and event not in self.uc_events:
-                    if uncontrollable:
-                        self.add_transition(name, [(s.get_id(), s.get_id())], [event], [event])
-                    else:
-                        self.add_transition(name, [(s.get_id(), s.get_id())], [event], [])
-                        return
-                if event in self.uc_events:
-                    self.add_transition(name, [(s.get_id(), s.get_id())], [event], [event])
-                else:
-                    self.add_transition(name, [(s.get_id(), s.get_id())], [event], [])
-
-
-    def new_automaton(self, name: str):  # Generate a new automaton
-        self.automatas[name] = Automata(name)
-        return name
-
-
-    def add_state(self, automaton_name: str, number_of_states: int, names: list,
-                  marked: list):  # Define states of an empty automata
-        if len(names) == 0:
-            names = range(0, number_of_states)
-            names = [str(numero) for numero in names]
-        self.automatas[automaton_name].add_state(number_of_states, names, marked, )
-
-
-    def add_transition(self, automaton_name: str, transitions: list, events: list, uncontrollable: list = []) -> object:
-        # Add transitions to an automaton
-        self.automatas[automaton_name].add_transition(transitions, events, uncontrollable, self.uc_events,
-                                                      self.c_events,
-                                                      self.dict_events, self.dict_events_name)
-
+    def _states(self, name):
+        model = self.models[name]
+        declaration = self.transition_order.get(id(model))
+        if declaration is None:
+            for state, index in self.numbering[name].items():
+                yield index, self._ordered_events(model, state)
+        else:
+            events = {state: [] for state in self.numbering[name]}
+            for state, event in declaration:
+                events[state].append(event)
+            for state, index in self.numbering[name].items():
+                yield index, events[state]
 
     def aislated(self, aislated: list = [], actuators: list = [], interseccion=dict([])):
         # Generate ST code from Ailated supervisor and actuators.
@@ -201,10 +99,9 @@ class process(DeslabBackend):
         names = [*supervisors, *(Isolated[0] if Isolated else [])]
         required = set()
         for name in names:
-            if name not in self.automatas:
-                raise ValueError(f"Automaton {name!r} is not loaded")
-            required.update(self.automatas[name].c_events)
-            required.update(self.automatas[name].uc_events)
+            controlled, uncontrolled = self._events(name)
+            required.update(controlled)
+            required.update(uncontrolled)
         for first, second in Isolated[1] if Isolated else ():
             required.update((first, second))
         if initial != "null":
@@ -244,17 +141,13 @@ class process(DeslabBackend):
             Intersections = dict([])
             for i in range(len(supervisors)):
                 for j in range(i + 1, len(supervisors)):
-                    nonconflict, TESTcoor, alltest = self.coordinator([supervisors[i], supervisors[j]],
-                                                                      [plants[i],
-                                                                       plants[j]])  # revisa si son conflictivos
-                    if not nonconflict:
-                        print('conflict', i, j)
-                        synthesized = self.supcon(TESTcoor, alltest, "SUPf")
-                        CO = self.reduce_supervisor(TESTcoor, synthesized, f"CO_{i}_{j}")
-                        self.load_automata([CO])
+                    CO = self._coordinator(
+                        (supervisors[i], supervisors[j]), (plants[i], plants[j]), f"CO_{i}_{j}",
+                    )
+                    if CO is not None:
                         Coordinators.append(CO)
-                    a = set(self.automatas[supervisors[i]].c_events)
-                    b = set(self.automatas[supervisors[j]].c_events)
+                    a = set(self._events(supervisors[i])[0])
+                    b = set(self._events(supervisors[j])[0])
                     intersect = list(a & b)
                     intersect = sorted({actuators[act].split(':')[0] for act in intersect})
                     if len(intersect) != 0:
@@ -267,14 +160,14 @@ class process(DeslabBackend):
                             else:
                                 Intersections[inter] = [i, j]
             for c in Coordinators:
-                for cont in self.automatas[c].c_events:
+                for cont in self._events(c)[0]:
                     if actuators[cont].split(':')[0] not in Intersections.keys():
                         event = actuators[cont]
                         Intersections[event.split(':')[0]] = []
                         sup = c.split('_')
-                        if cont in self.automatas[supervisors[int(sup[1])]].c_events:
+                        if cont in self._events(supervisors[int(sup[1])])[0]:
                             Intersections[event.split(':')[0]].append(int(sup[1]))
-                        if cont in self.automatas[supervisors[int(sup[2])]].c_events:
+                        if cont in self._events(supervisors[int(sup[2])])[0]:
                             Intersections[event.split(':')[0]].append(int(sup[2]))
             COsw = ""
             COc = ""
@@ -317,7 +210,7 @@ class process(DeslabBackend):
 
             coordinated_signals = {
                 actuators[event].split(':')[0]
-                for name in Coordinators for event in self.automatas[name].c_events
+                for name in Coordinators for event in self._events(name)[0]
             }
             intersection = self.intersection(Intersections, coordinated_signals)
             declaration = self.declaration_OPENPLC(actuators, st, j, Intersections, Coordinators, Mask,
@@ -463,7 +356,7 @@ class process(DeslabBackend):
             declared = []
             start += "\t\taux : BOOL := 0;\n"
             for coor in CO:
-                for i in self.automatas[coor].c_events:
+                for i in self._events(coor)[0]:
                     aux = actuators[i].split(':')[0]
                     if aux not in declared:
                         start += "\t\t" + aux + "_C : ARRAY [0..1] OF BOOL;\n"
@@ -517,16 +410,10 @@ class process(DeslabBackend):
     def ifs(self, name: str, actuators=dict([]), n_state=0):  # Generate the ST code for conditional sentences
         if_uncontrollable = "\t"
         if_controllable = "\t"
-        if name not in self.automatas.keys():
-            return "ERROR"
-        for origin, event_code, destination in self.automatas[name].transitions:
+        for origin, event, destination, controllable in self._transitions(name):
             if origin == destination:
                 continue
-            event = str(event_code)
-            if len(actuators) == 0:
-                name_event = self.dict_events_name[event]
-            else:
-                name_event = actuators[self.dict_events_name[event]]
+            name_event = actuators.get(event, event)
             name_event = name_event.split(':')
             edge_trigger = name_event[1] not in ("ON", "OFF")
 
@@ -534,7 +421,7 @@ class process(DeslabBackend):
                 name_event = 'NOT ' + name_event[0]
             else:
                 name_event = name_event[0]
-            if event_code % 2:
+            if controllable:
                 if_controllable += "IF state[" + str(n_state) + "] = " + str(origin) \
                                    + " & " + name_event \
                                    + " THEN\n  " + "\t\t" + "state[" + str(n_state) + "] := " \
@@ -564,14 +451,13 @@ class process(DeslabBackend):
                     else:
                         act_guess[i] = [inter]
         n_r = 0
-        uncontrolled = set(self.uc_events)
-        state_list = self.automatas[name].states
+        uncontrolled = set(self._events(name)[1])
         case = "\tCASE state[" + str(n_aut) + "] OF\n  "
-        for state in state_list:
-            events = [event for event in state.get_active_events() if event not in uncontrolled]
+        for state, active_events in self._states(name):
+            events = [event for event in active_events if event not in uncontrolled]
             num_event = len(events)
             if len(events) != 0:
-                case += "\t\t" + str(state.get_id()) + ":\n  "
+                case += "\t\t" + str(state) + ":\n  "
                 if num_event > 1:
                     case += "\t\t\tCASE " + "slt" + str(n_state) + "[" + str(n_r) + "] OF\n  "
                     for i in range(0, num_event):
@@ -618,14 +504,13 @@ class process(DeslabBackend):
 
     def coordinator_sc(self, name, state_it: int = 2, actuators=dict([])):
         # Generate the ST code for the Coordinator case statements
-        state_list = self.automatas[name].states
         case = "\tCASE state[" + str(state_it) + "] OF\n  "
-        all_events = self.automatas[name].c_events
-        for state in state_list:
-            events = set(state.get_active_events())
+        all_events = self._events(name)[0]
+        for state, active_events in self._states(name):
+            events = set(active_events)
             num_event = len(all_events)
             if num_event:
-                case += "\t\t" + str(state.get_id()) + ":\n  "
+                case += "\t\t" + str(state) + ":\n  "
                 for i in range(0, num_event):
                     name_event = all_events[i] if len(actuators) == 0 else actuators[all_events[i]]
                     aux = name_event.split(":")
@@ -644,10 +529,51 @@ class process(DeslabBackend):
         return case
 
 
-    def __str__(self):
-        if not self.automatas:
-            return "No automata loaded."
-        out = "Automata loaded in process:\n"
-        for name, aut in self.automatas.items():
-            out += f"  - {name} ({len(aut.states)} states, {len(aut.transitions)} transitions)\n"
-        return out
+def generate_ST_OPENPLC(supervisors, plants=(), actuators=None, namest="controller",
+                        Mask=None, Isolated=None, initial="null", *,
+                        output_dir="ST_Generated", event_order=None,
+                        state_order_sources=None, transition_order=None):
+    """Generate and save OpenPLC ST directly from in-memory DESlab automata.
+
+    Pass the source plants in supervisor order to use their controllability
+    classifications. Multiple supervisors require one plant each. Isolated
+    contains auxiliary DESlab automata followed by pairs of mapped events.
+
+    The case studies provide state and transition order metadata to preserve
+    historical PLC numbering and event priority. Other callers can omit it.
+    """
+    supervisors = tuple(supervisors)
+    plants = tuple(plants)
+    if (plants or len(supervisors) > 1) and len(plants) != len(supervisors):
+        raise ValueError("Supply one plant per supervisor, in the same order")
+    if Isolated and len(Isolated) != 2:
+        raise ValueError("Isolated must contain [automata, event_pairs]")
+    emitter = _STEmitter(output_dir, event_order, state_order_sources, transition_order)
+    supervisor_names = []
+    plant_names = []
+    for index, supervisor in enumerate(supervisors):
+        emitter._require_deterministic(f"Supervisor {index}", supervisor)
+        name = f"supervisor_{index}"
+        emitter.models[name] = supervisor
+        if plants:
+            plant = plants[index]
+            emitter._require_deterministic(f"Plant {index}", plant)
+            plant_name = f"plant_{index}"
+            emitter.models[plant_name] = plant
+            plant_names.append(plant_name)
+            emitter.controllable[name] = (plant.Sigcon & supervisor.Sigma) | (supervisor.Sigcon - plant.Sigma)
+        else:
+            emitter.controllable[name] = supervisor.Sigcon
+        emitter._prepare_emission(name)
+        supervisor_names.append(name)
+    isolated = []
+    if Isolated:
+        isolated_names = []
+        for index, model in enumerate(Isolated[0]):
+            name = f"isolated_{index}"
+            emitter.models[name] = model
+            emitter._prepare_emission(name)
+            isolated_names.append(name)
+        isolated = [isolated_names, Isolated[1]]
+    return emitter.generate_ST_OPENPLC(supervisor_names, plant_names, actuators or {}, namest,
+                                       Mask or {}, isolated, initial)
